@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"ohohestudio/sogorro/metadata"
@@ -10,7 +12,9 @@ import (
 	"os/signal"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/logging"
+	firebase "firebase.google.com/go"
 	"github.com/gorilla/mux"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -19,8 +23,32 @@ import (
 
 type App struct {
 	*http.Server
+	ctx       context.Context
+	fs        *firestore.Client
+	logger    *logging.Logger
 	projectId string
-	log       *logging.Logger
+}
+
+type LineEvent struct {
+	Type    string `json:"type"`
+	Message struct {
+		Type      string  `json:"type"`
+		Id        string  `json:"id"`
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Address   string  `json:"address"`
+	} `json:"message"`
+	WebhookEventId  string `json:"webhookEventId"`
+	DeliveryContext struct {
+		IsRedelivery bool `json:"isRedelivery"`
+	}
+	Timestamp int64 `json:"timestamp"`
+	Source    struct {
+		Type   string `json:"type"`
+		UserId string `json:"userId"`
+	}
+	ReplyToken string `json:"replyToken"`
+	Mode       string `json:"active"`
 }
 
 func main() {
@@ -34,10 +62,10 @@ func main() {
 
 	app, err := newApp(ctx, port, projectId)
 	if err != nil {
-		log.Fatalf("unable to initialize sogorro API server: %v", err)
+		log.Fatal(err)
 	}
 
-	log.Printf("starting sogorro API server, running on port: %s\n", port)
+	log.Printf("start sogorro API server, running on port: %s\n", port)
 
 	go func() {
 		if err := app.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -58,14 +86,16 @@ func main() {
 
 func newApp(ctx context.Context, port, projectId string) (*App, error) {
 	app := &App{
+		ctx: ctx,
 		Server: &http.Server{
 			Addr:           fmt.Sprintf(":%s", port),
-			ReadTimeout:    10 * time.Second,
-			WriteTimeout:   10 * time.Second,
+			ReadTimeout:    15 * time.Second,
+			WriteTimeout:   15 * time.Second,
 			MaxHeaderBytes: 1 << 20,
 		},
 	}
 
+	// Get Project ID
 	if projectId == "" {
 		projId, err := metadata.ProjectId(ctx)
 		if err != nil {
@@ -73,37 +103,115 @@ func newApp(ctx context.Context, port, projectId string) (*App, error) {
 		}
 		projectId = projId
 	}
-
 	app.projectId = projectId
 
-	client, err := logging.NewClient(
-		ctx,
-		fmt.Sprintf("projects/%s", app.projectId),
-		option.WithoutAuthentication(),
-		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
-	)
+	// firestore
+	fsClient, err := getFirebaseClient(ctx, app.projectId)
 	if err != nil {
-		return nil, fmt.Errorf("unable to initialize logging client: %v", err)
+		return nil, err
 	}
+	app.fs = fsClient
 
-	app.log = client.Logger("test-log", logging.RedirectAsJSON(os.Stderr))
+	// Logging
+	logger, err := getLogger(ctx, app.projectId)
+	if err != nil {
+		return nil, err
+	}
+	app.logger = logger
 
+	// Router
 	r := mux.NewRouter()
-	r.HandleFunc("/", app.Home).Methods("GET")
+	r.HandleFunc("/station", app.findStation).Methods("POST")
 	app.Handler = r
 
 	return app, nil
 }
 
-func (a *App) Home(w http.ResponseWriter, r *http.Request) {
-	a.log.Log(logging.Entry{
-		Severity: logging.Info,
-		HTTPRequest: &logging.HTTPRequest{
-			Request: r,
-		},
-		Labels:  map[string]string{"arbitraryField": "custom entry"},
-		Payload: "Structured logging example",
-	})
+func getFirebaseClient(ctx context.Context, projectId string) (*firestore.Client, error) {
+	config := &firebase.Config{
+		ProjectID: projectId,
+	}
 
-	fmt.Fprintf(w, "Hello World!\n")
+	app, err := firebase.NewApp(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Firebase app: %v", err)
+	}
+
+	client, err := app.Firestore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Firestore service: %v", err)
+	}
+
+	return client, nil
+}
+
+func getLogger(ctx context.Context, projectId string) (*logging.Logger, error) {
+	client, err := logging.NewClient(
+		ctx,
+		fmt.Sprintf("projects/%s", projectId),
+		option.WithoutAuthentication(),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize logging client: %v", err)
+	}
+
+	return client.Logger(fmt.Sprintf("%s-logger", projectId), logging.RedirectAsJSON(os.Stderr)), nil
+}
+
+func (a *App) makeRequest(method, url string) ([]byte, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create request: %v", err)
+	}
+
+	req.Header.Add("Accept", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("unable to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read response body: %v", err)
+	}
+
+	return body, nil
+}
+
+func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
+	var linePayload struct {
+		Destination string      `json:"destination"`
+		Events      []LineEvent `json:"events"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&linePayload)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to decode JSON string: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	m := make(map[string]float64)
+	m["latitude"] = linePayload.Events[0].Message.Latitude
+	m["longitude"] = linePayload.Events[0].Message.Longitude
+
+	if err := json.NewEncoder(w).Encode(m); err != nil {
+		http.Error(w, "failed to encode object", http.StatusInternalServerError)
+		return
+	}
+	// a.log.Log(logging.Entry{
+	// 	Severity: logging.Info,
+	// 	HTTPRequest: &logging.HTTPRequest{
+	// 		Request: r,
+	// 	},
+	// 	Labels:  map[string]string{"arbitraryField": "custom entry"},
+	// 	Payload: "Structured logging example",
+	// })
 }
