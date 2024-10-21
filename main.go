@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"ohohestudio/sogorro/metadata"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"cloud.google.com/go/logging"
 	firebase "firebase.google.com/go"
 	"github.com/gorilla/mux"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -195,14 +197,38 @@ func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	latitude := linePayload.Events[0].Message.Latitude
+	longitude := linePayload.Events[0].Message.Longitude
+	query := a.fs.Collection("stations").Where("latitude", ">=", latitude-0.03).
+		Where("latitude", "<=", latitude+0.03).
+		Where("longitude", ">=", longitude-0.03).
+		Where("longitude", "<=", longitude+0.03)
+	iter := query.Documents(a.ctx)
+
+	stations := make(map[string]map[string]interface{})
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+
+		if err != nil {
+			fmt.Printf("failed to iterate document: %v\n", err)
+		}
+
+		station := make(map[string]interface{})
+		station["location"] = doc.Data()["location"]
+		station["city"] = doc.Data()["city"]
+		station["district"] = doc.Data()["district"]
+		station["latitude"] = doc.Data()["latitude"]
+		station["longitude"] = doc.Data()["longitude"]
+		stations[doc.Data()["rId"].(string)] = station
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	m := make(map[string]float64)
-	m["latitude"] = linePayload.Events[0].Message.Latitude
-	m["longitude"] = linePayload.Events[0].Message.Longitude
-
-	if err := json.NewEncoder(w).Encode(m); err != nil {
+	if err := json.NewEncoder(w).Encode(stations); err != nil {
 		http.Error(w, "failed to encode object", http.StatusInternalServerError)
 		return
 	}
@@ -214,4 +240,25 @@ func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
 	// 	Labels:  map[string]string{"arbitraryField": "custom entry"},
 	// 	Payload: "Structured logging example",
 	// })
+}
+
+func (a *App) degreesToRadians(degrees float64) float64 {
+	return degrees * math.Pi / 180
+}
+
+func (a *App) haversine(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371 // Radius of Earth in kilometers
+	lat1Rad := a.degreesToRadians(lat1)
+	lon1Rad := a.degreesToRadians(lon1)
+	lat2Rad := a.degreesToRadians(lat2)
+	lon2Rad := a.degreesToRadians(lon2)
+
+	deltaLat := lat2Rad - lat1Rad
+	deltaLon := lon2Rad - lon1Rad
+
+	ax := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) + math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	c := 2 * math.Atan2(math.Sqrt(ax), math.Sqrt(1-ax))
+
+	distance := R * c
+	return distance
 }
