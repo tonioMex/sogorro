@@ -4,8 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-RUN echo go version
-
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -20,5 +18,7 @@ RUN set -eux && \
     rm -fr /var/lib/apt/lists/*
 
 COPY --from=builder /app/sogorro /app/sogorro
+
+EXPOSE 8080
 
 CMD ["/app/sogorro"]
