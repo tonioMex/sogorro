@@ -9,17 +9,6 @@ import (
 	"net/http"
 )
 
-type GoStation struct {
-	Address   string  `json:"address"`
-	City      string  `json:"city"`
-	Distance  float64 `json:"distance"`
-	District  string  `json:"district"`
-	Location  string  `json:"location"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-	VMType    int64   `json:"vmType"`
-}
-
 // 計算距離
 func degreesToRadians(degrees float64) float64 {
 	return degrees * math.Pi / 180
@@ -45,9 +34,8 @@ func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 func MakeRequest(method, url string, headers map[string]string, payload interface{}) ([]byte, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("unable to encoding object: %v", err)
+		return nil, fmt.Errorf("unable to encode object: %v", err)
 	}
-	fmt.Println(string(jsonData))
 
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(jsonData))
 	if err != nil {

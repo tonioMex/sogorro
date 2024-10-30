@@ -2,17 +2,28 @@ package libs
 
 import "fmt"
 
+type GoStation struct {
+	Address   string  `json:"address"`
+	City      string  `json:"city"`
+	Distance  float64 `json:"distance"`
+	District  string  `json:"district"`
+	Location  string  `json:"location"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	VMType    int64   `json:"vmType"`
+}
+
 type WebhookEvent struct {
 	Type    string `json:"type"`
 	Message struct {
 		Type            string  `json:"type"`
 		Id              string  `json:"id"`
-		Latitude        float64 `json:"latitude"`
-		Longitude       float64 `json:"longitude"`
-		Address         string  `json:"address"`
-		QuotedMessageId string  `json:"quotedMessageId"`
+		Latitude        float64 `json:"latitude,omitempty"`
+		Longitude       float64 `json:"longitude,omitempty"`
+		Address         string  `json:"address,omitempty"`
+		QuotedMessageId string  `json:"quotedMessageId,omitempty"`
 		QuoteToken      string  `json:"quoteToken"`
-		Text            string  `json:"text"`
+		Text            string  `json:"text,omitempty"`
 	} `json:"message"`
 	WebhookEventId  string `json:"webhookEventId"`
 	DeliveryContext struct {
@@ -29,7 +40,7 @@ type WebhookEvent struct {
 
 // Flex message template
 type LayoutType string
-type ButtonStyle string
+type ButtonType string
 type ActionType string
 type ElementType string
 
@@ -39,14 +50,15 @@ const (
 	VerticalLayout   LayoutType = "vertical"
 	HorizontalLayout LayoutType = "horizontal"
 	// button style
-	LinkButton      ButtonStyle = "link"
-	PrimaryButton   ButtonStyle = "primary"
-	SecondaryButton ButtonStyle = "secondary"
+	LinkButton      ButtonType = "link"
+	PrimaryButton   ButtonType = "primary"
+	SecondaryButton ButtonType = "secondary"
 	// action type
 	PostbackAction       ActionType = "postback"
 	URIAction            ActionType = "uri"
 	MessageAction        ActionType = "message"
 	DatetimePickerAction ActionType = "datetimepicker"
+	LocationAction       ActionType = "location"
 	// flex element
 	BoxElement       ElementType = "box"
 	ImageElement     ElementType = "image"
@@ -78,12 +90,13 @@ type TextTemplate struct {
 type ActionTemplate struct {
 	Type  ActionType `json:"type"`
 	Label string     `json:"label"`
-	URI   string     `json:"uri"`
+	URI   string     `json:"uri,omitempty"`
+	Text  string     `json:"text,omitempty"`
 }
 
 type ButtonTemplate struct {
 	Type   ElementType    `json:"type"`
-	Style  ButtonStyle    `json:"style"`
+	Style  ButtonType     `json:"style"`
 	Height string         `json:"height,omitempty"`
 	Action ActionTemplate `json:"action"`
 }
@@ -102,10 +115,20 @@ type BubbleTemplate struct {
 	Footer ContentTemplate `json:"footer"`
 }
 
+type QuickReplyItemTemplate struct {
+	Type     string         `json:"type"`
+	ImageUrl string         `json:"imageUrl"`
+	Action   ActionTemplate `json:"action"`
+}
+
 type BubbleMessageTemplate struct {
-	Type     ElementType    `json:"type"`
+	Type     string         `json:"type"`
 	AltText  string         `json:"altText"`
 	Contents BubbleTemplate `json:"contents"`
+}
+
+type QuickReplyTemplate struct {
+	Items []QuickReplyItemTemplate `json:"items"`
 }
 
 func BubbleMessage(station GoStation) BubbleMessageTemplate {
@@ -216,6 +239,19 @@ func BubbleMessage(station GoStation) BubbleMessageTemplate {
 			Type:  URIAction,
 			Label: "立即前往",
 			URI:   fmt.Sprintf("https://www.google.com.tw/maps/dir//%f,%f", station.Latitude, station.Longitude),
+		},
+	})
+
+	return message
+}
+
+func WelcomeQuickReplyMessage() QuickReplyTemplate {
+	message := QuickReplyTemplate{}
+	message.Items = append(message.Items, QuickReplyItemTemplate{
+		Type: "action",
+		Action: ActionTemplate{
+			Type:  LocationAction,
+			Label: "分享位置",
 		},
 	})
 

@@ -14,21 +14,17 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
-	"cloud.google.com/go/logging"
 	firebase "firebase.google.com/go"
 	"github.com/gorilla/mux"
 	"google.golang.org/api/iterator"
-	"google.golang.org/api/option"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type App struct {
 	*http.Server
-	ctx       context.Context
-	fs        *firestore.Client
-	logger    *logging.Logger
-	projectId string
+	ctx         context.Context
+	fs          *firestore.Client
+	projectId   string
+	makeRequest func(method, url string, headers map[string]string, payload interface{}) ([]byte, error)
 }
 
 func main() {
@@ -92,12 +88,7 @@ func newApp(ctx context.Context, port, projectId string) (*App, error) {
 	}
 	app.fs = fsClient
 
-	// Logging
-	logger, err := getLogger(ctx, app.projectId)
-	if err != nil {
-		return nil, err
-	}
-	app.logger = logger
+	app.makeRequest = libs.MakeRequest
 
 	// Router
 	r := mux.NewRouter()
@@ -125,84 +116,85 @@ func getFirebaseClient(ctx context.Context, projectId string) (*firestore.Client
 	return client, nil
 }
 
-func getLogger(ctx context.Context, projectId string) (*logging.Logger, error) {
-	client, err := logging.NewClient(
-		ctx,
-		fmt.Sprintf("projects/%s", projectId),
-		option.WithoutAuthentication(),
-		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize logging client: %v", err)
-	}
-
-	return client.Logger(fmt.Sprintf("%s-logger", projectId), logging.RedirectAsJSON(os.Stderr)), nil
-}
-
 func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
-	var linePayload struct {
+	var webhookPayload struct {
 		Destination string              `json:"destination"`
 		Events      []libs.WebhookEvent `json:"events"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&linePayload)
+	err := json.NewDecoder(r.Body).Decode(&webhookPayload)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to decode JSON string: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	latitude := linePayload.Events[0].Message.Latitude
-	longitude := linePayload.Events[0].Message.Longitude
-	query := a.fs.Collection("stations").Where("latitude", ">=", latitude-0.04).
-		Where("latitude", "<=", latitude+0.04).
-		Where("longitude", ">=", longitude-0.04).
-		Where("longitude", "<=", longitude+0.04)
-	iter := query.Documents(a.ctx)
-
-	var stations []libs.GoStation
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-
-		if err != nil {
-			fmt.Printf("failed to iterate document: %v\n", err)
-		}
-
-		stations = append(stations, libs.GoStation{
-			Address:   doc.Data()["address"].(string),
-			City:      doc.Data()["city"].(string),
-			Distance:  libs.Haversine(doc.Data()["latitude"].(float64), doc.Data()["longitude"].(float64), latitude, longitude),
-			District:  doc.Data()["district"].(string),
-			Location:  doc.Data()["location"].(string),
-			Latitude:  doc.Data()["latitude"].(float64),
-			Longitude: doc.Data()["longitude"].(float64),
-			VMType:    doc.Data()["vmType"].(int64),
-		})
-	}
-
-	sort.Slice(stations, func(j, k int) bool {
-		return stations[j].Distance < stations[k].Distance
-	})
 
 	payload := struct {
 		To       string        `json:"to"`
 		Messages []interface{} `json:"messages"`
 	}{}
 
-	payload.To = linePayload.Events[0].Source.UserId
-	for _, station := range stations[:3] {
-		payload.Messages = append(payload.Messages, libs.BubbleMessage(station))
+	payload.To = webhookPayload.Events[0].Source.UserId
+	if webhookPayload.Events[0].Message.Type == "location" {
+		latitude := webhookPayload.Events[0].Message.Latitude
+		longitude := webhookPayload.Events[0].Message.Longitude
+		query := a.fs.Collection("stations").Where("latitude", ">=", latitude-0.035).
+			Where("latitude", "<=", latitude+0.035).
+			Where("longitude", ">=", longitude-0.035).
+			Where("longitude", "<=", longitude+0.035).
+			Where("state", "==", 1)
+		iter := query.Documents(a.ctx)
+
+		var stations []libs.GoStation
+		for {
+			doc, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+
+			if err != nil {
+				fmt.Printf("failed to iterate document: %v\n", err)
+			}
+
+			stations = append(stations, libs.GoStation{
+				Address:   doc.Data()["address"].(string),
+				City:      doc.Data()["city"].(string),
+				Distance:  libs.Haversine(doc.Data()["latitude"].(float64), doc.Data()["longitude"].(float64), latitude, longitude),
+				District:  doc.Data()["district"].(string),
+				Location:  doc.Data()["location"].(string),
+				Latitude:  doc.Data()["latitude"].(float64),
+				Longitude: doc.Data()["longitude"].(float64),
+				VMType:    doc.Data()["vmType"].(int64),
+			})
+		}
+
+		if len(stations) > 0 {
+			sort.Slice(stations, func(j, k int) bool {
+				return stations[j].Distance < stations[k].Distance
+			})
+
+			for _, station := range stations[:3] {
+				payload.Messages = append(payload.Messages, libs.BubbleMessage(station))
+			}
+		} else {
+			payload.Messages = append(payload.Messages, map[string]string{
+				"type": "text",
+				"text": "抱歉，您附近沒有找到 Gogoro 充電站。請嘗試分享其他位置或稍後再試。",
+			})
+		}
+	} else {
+		payload.Messages = append(payload.Messages, map[string]interface{}{
+			"type":       "text",
+			"text":       "歡迎使用 sogorro \n\n只要分享您的目前位置，我們會為您找到離您最近的 GoStation，方便您快速找到充電站！隨時隨地，讓騎乘更輕鬆愜意！",
+			"quickReply": libs.WelcomeQuickReplyMessage(),
+		})
 	}
 
-	result, err := libs.MakeRequest(
+	result, err := a.makeRequest(
 		http.MethodPost,
-		"https://api.line.me/v2/bot/message/push",
+		os.Getenv("LINE_API_ENDPOINT"),
 		map[string]string{
 			"Content-Type":  "application/json",
-			"Authorization": "Bearer Token",
+			"Authorization": fmt.Sprintf("Bearer %s", os.Getenv("LINEBOT_ACCESS_TOKEN")),
 		},
 		payload,
 	)
@@ -215,17 +207,4 @@ func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(result)
-
-	// if err := json.NewEncoder(w).Encode(stations[:3]); err != nil {
-	// 	http.Error(w, "failed to encode object", http.StatusInternalServerError)
-	// 	return
-	// }
-	// a.log.Log(logging.Entry{
-	// 	Severity: logging.Info,
-	// 	HTTPRequest: &logging.HTTPRequest{
-	// 		Request: r,
-	// 	},
-	// 	Labels:  map[string]string{"arbitraryField": "custom entry"},
-	// 	Payload: "Structured logging example",
-	// })
 }
