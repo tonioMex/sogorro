@@ -13,19 +13,22 @@ type GoStation struct {
 	VMType    int64   `json:"vmType"`
 }
 
+// Line Webhook
+type WebhookMessage struct {
+	Type            string  `json:"type"`
+	Id              string  `json:"id"`
+	Latitude        float64 `json:"latitude,omitempty"`
+	Longitude       float64 `json:"longitude,omitempty"`
+	Address         string  `json:"address,omitempty"`
+	QuotedMessageId string  `json:"quotedMessageId,omitempty"`
+	QuoteToken      string  `json:"quoteToken"`
+	Text            string  `json:"text,omitempty"`
+}
+
 type WebhookEvent struct {
-	Type    string `json:"type"`
-	Message struct {
-		Type            string  `json:"type"`
-		Id              string  `json:"id"`
-		Latitude        float64 `json:"latitude,omitempty"`
-		Longitude       float64 `json:"longitude,omitempty"`
-		Address         string  `json:"address,omitempty"`
-		QuotedMessageId string  `json:"quotedMessageId,omitempty"`
-		QuoteToken      string  `json:"quoteToken"`
-		Text            string  `json:"text,omitempty"`
-	} `json:"message"`
-	WebhookEventId  string `json:"webhookEventId"`
+	Type            string         `json:"type"`
+	Message         WebhookMessage `json:"message"`
+	WebhookEventId  string         `json:"webhookEventId"`
 	DeliveryContext struct {
 		IsRedelivery bool `json:"isRedelivery"`
 	}
