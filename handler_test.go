@@ -30,16 +30,7 @@ func mockMakeRequest(method, url string, headers map[string]string, payload inte
 func mockWebhookEvent() libs.WebhookEvent {
 	return libs.WebhookEvent{
 		Type: "message",
-		Message: struct {
-			Type            string  "json:\"type\""
-			Id              string  "json:\"id\""
-			Latitude        float64 "json:\"latitude,omitempty\""
-			Longitude       float64 "json:\"longitude,omitempty\""
-			Address         string  "json:\"address,omitempty\""
-			QuotedMessageId string  "json:\"quotedMessageId,omitempty\""
-			QuoteToken      string  "json:\"quoteToken\""
-			Text            string  "json:\"text,omitempty\""
-		}{
+		Message: libs.WebhookMessage{
 			Type:       "text",
 			Id:         "message-id",
 			QuoteToken: "quote-token",

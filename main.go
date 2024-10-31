@@ -14,16 +14,17 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
-	firebase "firebase.google.com/go"
 	"github.com/gorilla/mux"
 	"google.golang.org/api/iterator"
 )
 
 type App struct {
 	*http.Server
-	ctx         context.Context
-	fs          *firestore.Client
-	projectId   string
+	ctx                context.Context
+	fs                 *firestore.Client
+	lineBotAccessToken string
+	projectId          string
+
 	makeRequest func(method, url string, headers map[string]string, payload interface{}) ([]byte, error)
 }
 
@@ -81,8 +82,15 @@ func newApp(ctx context.Context, port, projectId string) (*App, error) {
 	}
 	app.projectId = projectId
 
+	// Get Linebot access token
+	accessToken, err := libs.GetLineBotAccessToken(ctx, os.Getenv("SECRET_PROJECT_ID"), os.Getenv("SECRET_NAME"))
+	if err != nil {
+		return nil, err
+	}
+	app.lineBotAccessToken = accessToken
+
 	// firestore
-	fsClient, err := getFirebaseClient(ctx, app.projectId)
+	fsClient, err := libs.GetFirebaseClient(ctx, app.projectId)
 	if err != nil {
 		return nil, err
 	}
@@ -96,24 +104,6 @@ func newApp(ctx context.Context, port, projectId string) (*App, error) {
 	app.Handler = r
 
 	return app, nil
-}
-
-func getFirebaseClient(ctx context.Context, projectId string) (*firestore.Client, error) {
-	config := &firebase.Config{
-		ProjectID: projectId,
-	}
-
-	app, err := firebase.NewApp(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Firebase app: %v", err)
-	}
-
-	client, err := app.Firestore(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Firestore service: %v", err)
-	}
-
-	return client, nil
 }
 
 func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +184,7 @@ func (a *App) findStation(w http.ResponseWriter, r *http.Request) {
 		os.Getenv("LINE_API_ENDPOINT"),
 		map[string]string{
 			"Content-Type":  "application/json",
-			"Authorization": fmt.Sprintf("Bearer %s", os.Getenv("LINEBOT_ACCESS_TOKEN")),
+			"Authorization": fmt.Sprintf("Bearer %s", a.lineBotAccessToken),
 		},
 		payload,
 	)
