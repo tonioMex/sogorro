@@ -2,7 +2,7 @@
 
 透過 Line 分享定位，快速查找最近的 Gogoro 充電站。
 
-![sample.png](./images/sogorro.png)
+<img src="./images/sogorro.png" alt="sample" width="270" height="550">
 
 ## Features
 + 服務部署於 **Cloud Run**
